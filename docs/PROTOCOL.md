@@ -79,7 +79,29 @@ usb.device_address == 7 && usb.transfer_type == 0x01
   && usb.endpoint_address == 0x81 && usb.data_len == 8
 ```
 
+## The Model O2 Pro 4K
+
+Glorious CORE carries its own device table, and the Model O2 Pro 4K sits in it
+as the same kind of device on the same channel:
+
+| | Model D2 Pro 4k/8k | Model O2 Pro 4k/8k |
+| --- | --- | --- |
+| Receiver | `258A:2036` | `258A:2035` |
+| Wired | `258A:201C` | `258A:201B` |
+| Config collection | usage page `0xFFFF`, usage `0x00` | usage page `0xFFFF`, usage `0x00` |
+
+The `258A:2036` there matches what was captured here independently, which is
+reason to trust the neighbouring row. The reports above are therefore expected
+to work unchanged on a Model O2 Pro 4K once the product id is pointed at
+`0x2035`, though that has not been confirmed against real hardware.
+
+Note that CORE also ships a separate `mockDevices` list for development. Its
+ids do not match the real ones, and in it `0x2036` is labelled a Model O Minus.
+Do not read the mock table by mistake.
+
 ## Overriding this
 
-Drop a `protocol.toml` next to the executable and it replaces all of the above.
-See [CAPTURE.md](CAPTURE.md) for capturing your own on a different mouse.
+Drop a `protocol.toml` next to the executable. Every field is optional and
+anything absent keeps its built in value, so pointing the tool at a different
+product id is a one line file. See [CAPTURE.md](CAPTURE.md) for capturing your
+own reports on a mouse that needs them.

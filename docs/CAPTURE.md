@@ -15,13 +15,25 @@ You will use Wireshark with USBPcap to watch the USB traffic while you change th
 ## Step 1: find the device
 
 1. Plug in the 4K dongle.
-2. Open a terminal in the folder with `GloriousAutoPollingRate.exe` and run:
+2. Run `GloriousAutoPollingRate.exe --list`. It writes the results to `devices.txt` next to the executable. This is a windowed program with no console of its own, so running it from a terminal prints nothing: open `devices.txt`.
+3. You are looking for a collection with `usage_page 0xffff` and a **non zero** `feature_len`, usually 65. That is the channel the commands travel on. If nothing lists at all, the dongle is not detected.
 
-   ```powershell
-   .\GloriousAutoPollingRate.exe --list
-   ```
+Expect more than one entry, and expect a decoy. On the Model D2 Pro 4K the real output looks like this, where line 1 also reports `usage_page 0xffff` but has `feature_len 0` and is not the one you want:
 
-3. You should see a collection with `usage_page 0xffff` and a non zero `feature_len`, usually 65. That is the channel the commands travel on. If you see it, you are ready. If nothing lists, the dongle is not detected.
+```
+vid 0x258a pid 0x2036
+found 7 HID collection(s):
+
+1. usage_page 0xffff usage 0x0001 feature_len 0 output_len 0
+2. usage_page 0x0001 usage 0x0006 feature_len 0 output_len 2
+3. usage_page 0x000c usage 0x0001 feature_len 0 output_len 0
+4. usage_page 0x0001 usage 0x0080 feature_len 0 output_len 0
+5. usage_page 0xffff usage 0x0000 feature_len 65 output_len 0
+6. usage_page 0xffa0 usage 0x0001 feature_len 0 output_len 0
+7. usage_page 0x0001 usage 0x0002 feature_len 0 output_len 0
+```
+
+Line 5 is the one. The tool picks it by requiring a writable report rather than by position, which is why the decoy on line 1 does not win.
 
 ## Step 2: start the capture
 
@@ -61,7 +73,13 @@ If a single rate change sends more than one report, capture all of them in order
 
 ## Step 5: write a protocol.toml
 
-The Model D2 Pro 4K commands are built into the binary, so there is normally no protocol file at all. To use different ones, create a `protocol.toml` next to the executable. When that file exists it replaces the built in protocol entirely.
+The Model D2 Pro 4K commands are built into the binary, so there is normally no protocol file at all. To use different ones, create a `protocol.toml` next to the executable.
+
+Every field in that file is optional and anything you leave out keeps its built in value. That matters more than it sounds: if your mouse only differs by product id, as the Model O2 Pro 4K does, the whole file is one line.
+
+```toml
+pid = 0x2035
+```
 
 Put each captured payload into the matching entry under `[commands]`. The value is the full report as a list of byte values, including the leading report id byte if the payload has one.
 
@@ -79,7 +97,7 @@ report_length = 0
 
 You can write bytes in hex with `0x` or in plain decimal. The tool pads the report out to the device report length for you, so you only need the meaningful leading bytes, though pasting the entire payload is perfectly fine and safest.
 
-Because the file replaces the built in protocol, list every rate you want. The tray menu only offers rates that have commands, so anything you leave out simply does not appear.
+If you do supply a `[commands]` table, it replaces the built in one wholesale rather than merging into it, so list every rate you want. The tray menu only offers rates that have commands, so anything missing from your table simply does not appear.
 
 If your capture showed a report id at the front, keep `method = "feature"`. That is the normal case for these mice.
 
