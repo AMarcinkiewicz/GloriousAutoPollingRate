@@ -1,31 +1,54 @@
-//! Configuration loading and the on disk schema.
+//! Configuration, split so that the only file you normally touch is a plain
+//! list of process names.
 //!
-//! The tool is fully portable: it keeps a single `config.toml` next to the
-//! executable. On first run that file is created from a bundled template so the
-//! user always has a documented starting point.
+//! Three files can sit next to the executable:
+//!
+//!   processlist.cfg   the programs to watch, one name per line. Yours to edit.
+//!   settings.toml     the two rates. Written by the tray menu.
+//!   protocol.toml     optional. Only needed for a mouse other than the one
+//!                     the built in commands were captured from.
+//!
+//! Only the first two are created on first run. The protocol is built into the
+//! binary, so a Model D2 Pro 4K works with nothing to capture or paste.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// The bundled default configuration, written to disk on first run.
-pub const DEFAULT_CONFIG: &str = include_str!("../config.example.toml");
+/// The starting process list, written on first run.
+pub const DEFAULT_PROCESS_LIST: &str = "\
+# Programs that should use the active polling rate.
+#
+# One process name per line, including the .exe, matched case insensitively.
+# Lines starting with # are ignored. Save the file, then choose \"Reload\" from
+# the tray menu.
+#
+# Set the two rates themselves from the tray menu, not here.
 
-/// How the tool decides which polling rate should be active.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Mode {
-    /// Follow the focused window. The foreground application decides the rate.
-    Focus,
-    /// Follow running processes. If any listed program is running, use its rate.
-    Running,
-}
+cs2.exe
+valorant.exe
+overwatch.exe
+";
 
-impl Default for Mode {
-    fn default() -> Self {
-        Mode::Focus
-    }
-}
+/// Polling rates offered in the tray menu, low to high.
+pub const RATES: &[u32] = &[125, 250, 500, 1000, 2000, 4000];
+
+/// The captured polling rate reports for the Glorious Model D2 Pro 4K.
+///
+/// Each entry is a full HID feature report starting with the report id. The
+/// device pads the rest to its 65 byte report length. Layout after the id:
+///
+///     00 00 02 03 01 0A 01 XX XX
+///
+/// where 0x0A is the polling rate setting and XX is the rate code, sent twice.
+const BUILTIN_COMMANDS: &[(u32, &[u8])] = &[
+    (125, &[0x00, 0x00, 0x00, 0x02, 0x03, 0x01, 0x0A, 0x01, 0x08, 0x08]),
+    (250, &[0x00, 0x00, 0x00, 0x02, 0x03, 0x01, 0x0A, 0x01, 0x04, 0x04]),
+    (500, &[0x00, 0x00, 0x00, 0x02, 0x03, 0x01, 0x0A, 0x01, 0x02, 0x02]),
+    (1000, &[0x00, 0x00, 0x00, 0x02, 0x03, 0x01, 0x0A, 0x01, 0x01, 0x01]),
+    (2000, &[0x00, 0x00, 0x00, 0x02, 0x03, 0x01, 0x0A, 0x01, 0x20, 0x20]),
+    (4000, &[0x00, 0x00, 0x00, 0x02, 0x03, 0x01, 0x0A, 0x01, 0x40, 0x40]),
+];
 
 /// How a command is delivered to the device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,19 +66,34 @@ impl Default for Method {
     }
 }
 
-/// A program to watch, with an optional per program polling rate.
+/// The two rates and the small behaviour switches. This is what the tray menu
+/// edits, so it is written back to disk whenever something changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Program {
-    /// Executable name, case insensitive, for example "cs2.exe".
-    pub exe: String,
-    /// Rate in Hz for this program. When omitted, `active_rate` is used.
-    #[serde(default)]
-    pub rate: Option<u32>,
+#[serde(default)]
+pub struct Settings {
+    /// Rate in Hz while a listed program is running.
+    pub active_rate: u32,
+    /// Rate in Hz the rest of the time. This is the battery saving rate.
+    pub inactive_rate: u32,
+    /// Show a tray notification whenever the rate changes.
+    pub notifications: bool,
+    /// How often the process list is rescanned, in milliseconds.
+    pub poll_interval_ms: u64,
 }
 
-/// The device protocol description. The command bytes are filled in once they
-/// have been captured for the specific mouse, so they live in config rather
-/// than in the binary.
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            active_rate: 4000,
+            inactive_rate: 500,
+            notifications: true,
+            poll_interval_ms: 2000,
+        }
+    }
+}
+
+/// The device protocol. Defaults to the built in Model D2 Pro 4K reports and is
+/// only ever read from disk when a `protocol.toml` exists.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Protocol {
@@ -71,14 +109,16 @@ pub struct Protocol {
     pub method: Method,
     /// Force a report length by padding or truncating. 0 uses the device caps.
     pub report_length: usize,
-    /// Command bytes per rate. The key is the rate in Hz as a string, the value
-    /// is the full report including the leading report id. An empty value means
-    /// the command for that rate is not known yet.
+    /// Command bytes per rate, keyed by the rate in Hz as a string.
     pub commands: BTreeMap<String, Vec<u8>>,
 }
 
 impl Default for Protocol {
     fn default() -> Self {
+        let mut commands = BTreeMap::new();
+        for (rate, bytes) in BUILTIN_COMMANDS {
+            commands.insert(rate.to_string(), bytes.to_vec());
+        }
         Protocol {
             vid: 0x258A,
             pid: 0x2036,
@@ -86,43 +126,18 @@ impl Default for Protocol {
             usage: 0,
             method: Method::Feature,
             report_length: 0,
-            commands: BTreeMap::new(),
+            commands,
         }
     }
 }
 
-/// The full configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+/// Everything the running app needs, assembled from the pieces above.
+#[derive(Debug, Clone, Default)]
 pub struct Config {
-    /// Switching strategy.
-    pub mode: Mode,
-    /// Rate in Hz used when nothing matches. This is the battery saving rate.
-    pub inactive_rate: u32,
-    /// Rate in Hz for listed programs that do not set their own rate.
-    pub active_rate: u32,
-    /// How often running mode rescans processes, in milliseconds.
-    pub poll_interval_ms: u64,
-    /// Show a tray notification whenever the rate changes.
-    pub notifications: bool,
-    /// The programs to watch.
-    pub programs: Vec<Program>,
-    /// Device protocol description.
+    pub settings: Settings,
+    /// Watched process names, already lowercased for cheap comparison.
+    pub programs: Vec<String>,
     pub protocol: Protocol,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            mode: Mode::Focus,
-            inactive_rate: 500,
-            active_rate: 1000,
-            poll_interval_ms: 2000,
-            notifications: true,
-            programs: Vec::new(),
-            protocol: Protocol::default(),
-        }
-    }
 }
 
 impl Config {
@@ -135,33 +150,125 @@ impl Config {
             .map(|bytes| bytes.as_slice())
     }
 
-    /// Look up a per program rate by executable name, case insensitive.
-    pub fn rate_for_exe(&self, exe: &str) -> Option<u32> {
-        self.programs
+    /// Rates the menu should offer: the standard list, minus any the current
+    /// protocol has no command for, plus any extra the protocol does define.
+    pub fn available_rates(&self) -> Vec<u32> {
+        let mut rates: Vec<u32> = self
+            .protocol
+            .commands
             .iter()
-            .find(|p| p.exe.eq_ignore_ascii_case(exe))
-            .map(|p| p.rate.unwrap_or(self.active_rate))
+            .filter(|(_, bytes)| !bytes.is_empty())
+            .filter_map(|(rate, _)| rate.parse::<u32>().ok())
+            .collect();
+        rates.sort_unstable();
+        if rates.is_empty() {
+            rates = RATES.to_vec();
+        }
+        rates
     }
 }
 
-/// The path to the config file, which lives next to the executable.
-pub fn config_path() -> PathBuf {
-    let mut dir = std::env::current_exe()
+/// The directory holding the executable, which is where all files live.
+fn base_dir() -> PathBuf {
+    std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."));
-    dir.push("config.toml");
-    dir
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Load the config, creating it from the bundled template on first run.
-pub fn load() -> Result<Config, String> {
-    let path = config_path();
-    if !path.exists() {
-        std::fs::write(&path, DEFAULT_CONFIG)
-            .map_err(|e| format!("could not create config at {}: {e}", path.display()))?;
+/// The process list, the one file a user is expected to edit.
+pub fn process_list_path() -> PathBuf {
+    base_dir().join("processlist.cfg")
+}
+
+/// The tray managed settings file.
+pub fn settings_path() -> PathBuf {
+    base_dir().join("settings.toml")
+}
+
+/// The optional protocol override, absent on a normal install.
+pub fn protocol_path() -> PathBuf {
+    base_dir().join("protocol.toml")
+}
+
+/// Parse a process list. Blank lines and `#` comments are skipped, and names
+/// are lowercased so matching is a plain comparison.
+fn parse_process_list(text: &str) -> Vec<String> {
+    text.lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| line.to_ascii_lowercase())
+        .collect()
+}
+
+/// Write the settings file. Called whenever the tray menu changes something.
+pub fn save_settings(settings: &Settings) -> Result<(), String> {
+    let body = toml::to_string_pretty(settings)
+        .map_err(|e| format!("could not encode settings: {e}"))?;
+    let text = format!(
+        "# Written by the tray menu. Set these from the tray icon rather than\n\
+         # by hand. The programs to watch live in processlist.cfg.\n\n{body}"
+    );
+    std::fs::write(settings_path(), text)
+        .map_err(|e| format!("could not write settings: {e}"))
+}
+
+/// Load everything, creating the two user facing files on first run.
+///
+/// This never fails outright. Anything missing or malformed falls back to a
+/// default so the tray icon always appears, and the trouble is returned
+/// alongside so the caller can mention it.
+pub fn load() -> (Config, Vec<String>) {
+    let mut problems: Vec<String> = Vec::new();
+
+    // Settings, created on first run.
+    let settings_file = settings_path();
+    if !settings_file.exists() {
+        let _ = save_settings(&Settings::default());
     }
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("could not read config at {}: {e}", path.display()))?;
-    toml::from_str(&text).map_err(|e| format!("config is not valid: {e}"))
+    let settings = match std::fs::read_to_string(&settings_file) {
+        Ok(text) => match toml::from_str::<Settings>(&text) {
+            Ok(s) => s,
+            Err(e) => {
+                problems.push(format!("settings.toml is not valid: {e}"));
+                Settings::default()
+            }
+        },
+        Err(_) => Settings::default(),
+    };
+
+    // Process list, created on first run.
+    let list_file = process_list_path();
+    if !list_file.exists() {
+        let _ = std::fs::write(&list_file, DEFAULT_PROCESS_LIST);
+    }
+    let programs = match std::fs::read_to_string(&list_file) {
+        Ok(text) => parse_process_list(&text),
+        Err(_) => Vec::new(),
+    };
+
+    // Protocol, built in unless an override file exists.
+    let protocol_file = protocol_path();
+    let protocol = if protocol_file.exists() {
+        match std::fs::read_to_string(&protocol_file) {
+            Ok(text) => match toml::from_str::<Protocol>(&text) {
+                Ok(p) => p,
+                Err(e) => {
+                    problems.push(format!("protocol.toml is not valid: {e}"));
+                    Protocol::default()
+                }
+            },
+            Err(_) => Protocol::default(),
+        }
+    } else {
+        Protocol::default()
+    };
+
+    let config = Config {
+        settings,
+        programs,
+        protocol,
+    };
+
+    (config, problems)
 }

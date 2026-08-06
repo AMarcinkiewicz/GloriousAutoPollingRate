@@ -1,23 +1,29 @@
 # Glorious Auto Polling Rate
 
-A tiny Windows tray tool that switches your Glorious mouse polling rate automatically, based on which application you are using. Set a low rate to save battery while you browse or work, and let your games jump to a high rate the moment they open or take focus.
+A tiny Windows tray tool that raises your Glorious mouse polling rate while a game is open and drops it back the rest of the time. High rate when it matters, low rate to save wireless battery, and you never think about it.
 
 It was built for the Glorious Model D2 Pro 4K, and it is designed to be as light as a tool like this can be. No Electron, no background service, no measurable CPU while idle.
 
 ## Why this exists
 
-Glorious CORE lets you set a polling rate, but it is a single global value and the app itself is heavy. A high polling rate is great in game and wasteful everywhere else, because it drains the wireless battery faster and gives you nothing on the desktop. This tool flips the rate for you so you never think about it.
+Glorious CORE lets you set a polling rate, but it is a single global value and the app itself is heavy. A high polling rate is great in game and wasteful everywhere else, because it drains the wireless battery faster and gives you nothing on the desktop. This tool flips the rate for you.
+
+## How it decides
+
+One rule, and that is the whole thing:
+
+> If any program on your list is running, use the **active** rate. Otherwise use the **inactive** rate.
+
+Running, not focused. Alt tab to Discord or your browser mid match and the rate stays high, because the game is still open. It drops back when you actually close the game.
 
 ## Features
 
-- Per application polling rates. Give each program its own rate, for example 4000 Hz for your main shooter and 1000 Hz for everything else.
-- A global active rate and an inactive rate, if you would rather keep it simple.
-- Two switching styles:
-  - Focus mode: the app you are actively using decides the rate. Fully event driven, so it uses zero CPU while idle.
-  - Running mode: if any listed program is running, the active rate is used. The highest match wins.
-- Pause switching, reload config, and flip modes from the tray menu.
+- Two rates, picked from the tray menu, applied instantly and remembered.
+- A plain text list of programs. One `.exe` per line, nothing else to learn.
+- Starts with Windows by default, with a tray toggle to turn it off.
+- Pause switching from the tray at any time.
 - Optional notification each time the rate changes.
-- Portable. A single executable and a plain text config file. Nothing is written to the registry.
+- Portable. One executable and two small files beside it.
 
 ## Footprint
 
@@ -28,7 +34,7 @@ Measured on the release build:
 | Executable size | about 0.46 MB |
 | Private memory | under 2 MB |
 | Working set while idle | under 1 MB after startup trim |
-| CPU while idle | 0 percent (it waits on Windows events) |
+| CPU while idle | 0 percent (a process list scan every 2 seconds, too small to register) |
 
 ## Requirements
 
@@ -37,74 +43,79 @@ Measured on the release build:
 
 ## How the mouse is driven
 
-There is no public API to set a Glorious polling rate, so this tool speaks to the mouse directly using HID feature reports. The bytes are not hidden in the binary. They live in `config.toml` under `[protocol.commands]`, one report per rate, so you can read exactly what gets sent to your hardware and change it if you need to.
+There is no public API to set a Glorious polling rate, so this tool speaks to the mouse directly using HID feature reports. The reports for the Model D2 Pro 4K were captured from Glorious CORE, verified against the mouse, and built into the binary, so that mouse works with nothing to capture or paste. Supported rates are 125, 250, 500, 1000, 2000 and 4000 Hz.
 
-The Model D2 Pro 4K commands ship filled in and are verified working, so there is nothing to capture for that mouse. Supported rates are 125, 250, 500, 1000, 2000 and 4000 Hz.
+The bytes are documented rather than hidden. They are listed in [docs/PROTOCOL.md](docs/PROTOCOL.md) and in `src/config.rs`, and you can override them without rebuilding by dropping a `protocol.toml` next to the executable.
 
-If you have a different Glorious mouse, the reports will differ. Capturing your own takes about fifteen minutes with Wireshark, and [docs/CAPTURE.md](docs/CAPTURE.md) walks through it. Until a rate has bytes, the tool runs and shows its tray icon but reports that it has no command for that rate.
+If you have a different Glorious mouse, the reports will differ and you need your own capture. It takes about fifteen minutes with Wireshark and [docs/CAPTURE.md](docs/CAPTURE.md) walks through it.
 
 ## Download and install
 
 1. Go to the [Releases](https://github.com/amarcinkiewicz/GloriousAutoPollingRate/releases) page and download `GloriousAutoPollingRate.exe`.
 2. Put it in a folder you like, for example `C:\Tools\GloriousAutoPollingRate\`.
-3. Double click it. A mouse icon appears in the system tray and a `config.toml` file is created next to the executable.
-4. Edit `config.toml` to list the programs you care about. On a Model D2 Pro 4K the rate commands are already filled in. On any other Glorious mouse, follow [docs/CAPTURE.md](docs/CAPTURE.md) to capture yours first.
-5. Right click the tray icon and choose Reload config.
+3. Double click it. A mouse icon appears in the system tray, and it sets itself to start with Windows.
+4. Right click the icon, choose Edit program list, and add the games you care about. Save, then choose Reload program list.
+5. Pick your active and inactive rates from the same menu.
 
 That is the whole install. There is no installer and nothing runs in the background except the tool itself.
 
-## Configuration
+## Everyday use
 
-The config file lives next to the executable and is plain TOML. Edit it, then choose Reload config from the tray menu. Right click the tray icon and choose Open config file to jump straight to it.
+There are only two things to know.
 
-```toml
-# Switching strategy: "focus" or "running".
-mode = "focus"
+**The rates come from the tray menu.** Right click the tray icon and pick an active rate and an inactive rate. The choice is applied at once and remembered.
 
-# Rate in Hz used when nothing matches. Your battery saving rate.
-inactive_rate = 500
-
-# Rate in Hz for listed programs that do not set their own rate.
-active_rate = 1000
-
-# How often running mode rescans, in milliseconds. Ignored in focus mode.
-poll_interval_ms = 2000
-
-# Show a tray notification when the rate changes.
-notifications = true
-
-# One block per program. "exe" is matched case insensitively.
-# "rate" is optional and falls back to active_rate.
-[[programs]]
-exe = "cs2.exe"
-rate = 4000
-
-[[programs]]
-exe = "valorant.exe"
-rate = 2000
-
-[[programs]]
-exe = "chrome.exe"   # no rate, so active_rate is used
+```
+Watching 3 program(s)
+-----------------------------
+Pause auto switching
+-----------------------------
+Active rate: 4000 Hz     >  125  250  500  1000  2000  [4000]
+Inactive rate: 500 Hz    >  125  250 [500] 1000  2000   4000
+-----------------------------
+Edit program list
+Reload program list
+-----------------------------
+Show notifications        [x]
+Start with Windows        [x]
+-----------------------------
+About and help
+Quit
 ```
 
-### Focus mode versus running mode
+**The programs come from a plain text file.** Choose Edit program list to open `processlist.cfg` in Notepad. One process name per line, including the `.exe`, matched case insensitively. Lines starting with `#` are ignored. Save, then choose Reload program list.
 
-- Focus mode is the default and the lightest. When you switch to a window, the tool looks at that program and picks its rate. If the program is not listed, it uses `inactive_rate`. Great for putting the rate up only while you are actually in the game.
-- Running mode ignores focus. If any listed program is running at all, its rate is applied. If several match, the highest rate wins. Useful if you want the high rate for the entire time a game is open, even when you alt tab.
+```
+cs2.exe
+valorant.exe
+overwatch.exe
+```
+
+If any of them is running, you get the active rate. Otherwise the inactive rate. There is nothing per program to configure.
+
+A new game is picked up within a couple of seconds of launching, and the rate drops back a couple of seconds after you close it.
 
 ## Start automatically with Windows
 
-The tool does not touch the registry, so add it to startup yourself:
+On by default. The first time it runs it adds itself to `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, which needs no administrator rights and no installer.
 
-1. Press `Windows` + `R`, type `shell:startup`, and press Enter.
-2. Create a shortcut to `GloriousAutoPollingRate.exe` in the folder that opens.
+Turn it off any time with Start with Windows in the tray menu, which removes the entry and leaves nothing behind. The tray menu always shows the real state of the registry entry, so if you disable it elsewhere the checkbox follows.
 
-It will now start quietly at login.
+## Files it creates
+
+All next to the executable, all safe to delete:
+
+| File | What it is |
+| --- | --- |
+| `processlist.cfg` | Your program list. The only file you normally edit. |
+| `settings.toml` | The two rates. Written by the tray menu. |
+| `protocol.toml` | Optional, absent on a normal install. Only for a mouse other than the one the built in commands came from. |
 
 ## Troubleshooting
 
-- The tray tooltip says the mouse was not found. Make sure the 4K dongle is plugged in, then right click and choose Reload config. If you use a different Glorious model, set the correct `vid` and `pid` in the config.
-- The tooltip says there is no captured command for a rate. That rate has an empty array in `config.toml`. On the Model D2 Pro 4K this is expected for 8000, which the 4K dongle does not offer. For any other rate or a different mouse, capture it, see [docs/CAPTURE.md](docs/CAPTURE.md).
+- The tray tooltip says the mouse was not found. Make sure the 4K dongle is plugged in, then right click and choose Reload program list. If you use a different Glorious model, set the correct `vid` and `pid` in a `protocol.toml`, see [docs/CAPTURE.md](docs/CAPTURE.md).
+- The tooltip says there is no command for a rate. The tray menu only offers rates it has commands for, so this normally means a `protocol.toml` is present and incomplete. Delete it to go back to the built in commands.
+- You upgraded from an earlier version and still have a `config.toml`. It is no longer read and can be deleted. Rates now live in the tray menu and programs in `processlist.cfg`.
 - You want to see which HID collections the tool can find. Run `GloriousAutoPollingRate.exe --list` from a terminal. It prints every matching collection with its usage page and report lengths, which is exactly what you need while capturing.
 
 ## Build from source
@@ -121,9 +132,10 @@ The binary lands in `target\release\GloriousAutoPollingRate.exe`.
 ## How it works
 
 - The tray icon, menu, and notifications use the Win32 shell APIs directly.
-- Focus mode installs a single `SetWinEventHook` for foreground changes, so the tool sleeps until Windows tells it the active window changed. That is why idle CPU is zero.
-- Running mode uses a low frequency timer to rescan the process list, which costs a fraction of a millisecond every couple of seconds.
-- Rates are applied by opening the mouse vendor HID collection and sending a feature report. The report bytes come from your `config.toml`.
+- A `WM_TIMER` every two seconds walks the process list with `CreateToolhelp32Snapshot` and stops at the first match, so the common case of a listed game being open is cheaper than a full enumeration. The rest of the time the process sits blocked in `GetMessageW`.
+- A report is only sent when the target rate actually changes, so a quiet desktop session sends nothing at all after the first one.
+- Rates are applied by opening the mouse vendor HID collection and sending a feature report, built in for the Model D2 Pro 4K and overridable with a `protocol.toml`.
+- Start with Windows is a single value under the per user `Run` key. There is no second copy of that state in the settings file, so the menu can never disagree with what Windows will actually do.
 - On startup the process trims its working set so the reported memory stays tiny.
 
 ## Disclaimer

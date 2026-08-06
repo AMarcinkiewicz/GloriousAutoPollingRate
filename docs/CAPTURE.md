@@ -1,6 +1,8 @@
 # Capturing your polling rate commands
 
-This tool sends the mouse the exact HID feature report that Glorious CORE would send when you pick a polling rate. Those bytes are specific to your device, so you capture them once and paste them into `config.toml`. The whole thing takes about fifteen minutes.
+This tool sends the mouse the exact HID feature report that Glorious CORE would send when you pick a polling rate.
+
+**You do not need this page for a Model D2 Pro 4K.** Those reports are already captured and built into the binary, and [PROTOCOL.md](PROTOCOL.md) documents them. This page is for a different Glorious mouse, whose reports will differ. It takes about fifteen minutes and ends with a `protocol.toml` next to the executable.
 
 You will use Wireshark with USBPcap to watch the USB traffic while you change the rate in Glorious CORE. Then you copy the bytes into the config.
 
@@ -57,30 +59,41 @@ For each rate you set:
 
 If a single rate change sends more than one report, capture all of them in order. Some devices send a short command report followed by a data report. If in doubt, copy every SET_REPORT that appears in that burst and keep them in order.
 
-## Step 5: fill in the config
+## Step 5: write a protocol.toml
 
-Open `config.toml` and put each captured payload into the matching entry under `[protocol.commands]`. The value is the full report as a list of byte values, including the leading report id byte if the payload has one.
+The Model D2 Pro 4K commands are built into the binary, so there is normally no protocol file at all. To use different ones, create a `protocol.toml` next to the executable. When that file exists it replaces the built in protocol entirely.
 
-For example, if setting 1000 Hz sent the payload `05 04 00 01 ...`, you would write:
+Put each captured payload into the matching entry under `[commands]`. The value is the full report as a list of byte values, including the leading report id byte if the payload has one.
 
 ```toml
-[protocol.commands]
+vid = 0x258A
+pid = 0x2036
+usage_page = 0xFFFF
+usage = 0
+method = "feature"
+report_length = 0
+
+[commands]
 "1000" = [0x05, 0x04, 0x00, 0x01]
 ```
 
 You can write bytes in hex with `0x` or in plain decimal. The tool pads the report out to the device report length for you, so you only need the meaningful leading bytes, though pasting the entire payload is perfectly fine and safest.
 
-If your capture showed a report id at the front, keep `method = "feature"` in the config. That is the normal case for these mice.
+Because the file replaces the built in protocol, list every rate you want. The tray menu only offers rates that have commands, so anything you leave out simply does not appear.
+
+If your capture showed a report id at the front, keep `method = "feature"`. That is the normal case for these mice.
 
 ## Step 6: test it
 
-1. Save `config.toml`.
-2. Right click the tray icon and choose Reload config.
+1. Save `protocol.toml`.
+2. Right click the tray icon and choose Reload program list, or restart the tool.
 3. Switch to a program you configured, or open the game you listed. The tray tooltip should now show the new rate, and you will get a notification if notifications are on.
 4. Confirm the rate really changed. You can open a polling rate checker, or simply feel the difference in game. Glorious CORE may still show its old value, because the tool talks to the mouse directly and does not update the CORE interface.
 
 ## If you get stuck
 
-The easiest way to share a capture is to save it from Wireshark as a `.pcapng` file, or to copy the hex stream of each SET_REPORT along with the rate you set. With the rate and the bytes side by side, filling in the config is quick.
+The easiest way to share a capture is to save it from Wireshark as a `.pcapng` file, or to copy the hex stream of each SET_REPORT along with the rate you set. With the rate and the bytes side by side, filling in the protocol file is quick.
+
+A trick worth knowing: you do not have to trust that a rate code means what you think. Count the mouse input packets per second in the capture while moving the mouse, and the real rate falls out of the data. Watch out that USBPcap logs both the request and its completion for every transfer, so filter to completions or you will read exactly double the true rate. That is how the mapping in [PROTOCOL.md](PROTOCOL.md) was pinned down.
 
 Do not send bytes you did not capture from your own device. Random bytes will not set a rate, and there is no reason to trust someone else's capture over your own.

@@ -6,13 +6,14 @@
 //! based on the focused application or the set of running programs. It is event
 //! driven, so it uses no measurable CPU while idle.
 
+mod autostart;
 mod config;
 mod hid;
 mod monitor;
 
 use std::cell::RefCell;
 
-use config::{Config, Mode};
+use config::Config;
 use hid::Device;
 
 use windows::core::{w, PCWSTR};
@@ -21,7 +22,6 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcess, SetProcessWorkingSetSize};
-use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::Shell::{
     ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_NONE, NIM_ADD,
     NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NOTIFYICONDATAW, NOTIFYICON_VERSION_4,
@@ -30,8 +30,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
     DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, KillTimer,
     LookupIconIdFromDirectoryEx, MessageBoxW, PostQuitMessage, RegisterClassW, SetForegroundWindow,
-    SetTimer, TrackPopupMenu, TranslateMessage, EVENT_SYSTEM_FOREGROUND, HICON, HMENU, HWND_MESSAGE,
-    IMAGE_FLAGS, MB_ICONINFORMATION, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG,
+    SetTimer, TrackPopupMenu, TranslateMessage, HICON, HMENU, HWND_MESSAGE,
+    IMAGE_FLAGS, MB_ICONINFORMATION, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG,
     SW_SHOWNORMAL, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WINDOW_STYLE,
     WM_APP, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
 };
@@ -48,11 +48,18 @@ const TIMER_ID: usize = 1;
 
 // Menu command ids.
 const CMD_PAUSE: usize = 10;
-const CMD_MODE: usize = 11;
 const CMD_RELOAD: usize = 12;
-const CMD_OPEN_CONFIG: usize = 13;
+const CMD_OPEN_LIST: usize = 13;
 const CMD_GITHUB: usize = 14;
 const CMD_QUIT: usize = 15;
+const CMD_NOTIFICATIONS: usize = 16;
+const CMD_AUTOSTART: usize = 17;
+
+/// Rate submenu ids are a base plus the index into the available rate list.
+const CMD_ACTIVE_BASE: usize = 100;
+const CMD_INACTIVE_BASE: usize = 200;
+/// How many ids each rate submenu may use before it would collide with the next.
+const RATE_SPAN: usize = 100;
 
 thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
@@ -66,7 +73,6 @@ struct App {
     current_rate: Option<u32>,
     paused: bool,
     hwnd: HWND,
-    hook: HWINEVENTHOOK,
     icon_active: HICON,
     icon_inactive: HICON,
     nid: NOTIFYICONDATAW,
@@ -116,25 +122,22 @@ fn load_icon(bytes: &[u8]) -> Option<HICON> {
 }
 
 impl App {
+    /// The active rate applies while any listed program is running, whether or
+    /// not you are tabbed into it. Otherwise the inactive rate applies.
     fn desired_rate(&self) -> u32 {
-        match self.config.mode {
-            Mode::Focus => match monitor::foreground_exe() {
-                Some(exe) => self
-                    .config
-                    .rate_for_exe(&exe)
-                    .unwrap_or(self.config.inactive_rate),
-                None => self.config.inactive_rate,
-            },
-            Mode::Running => {
-                let mut best: Option<u32> = None;
-                for exe in monitor::running_exes() {
-                    if let Some(rate) = self.config.rate_for_exe(&exe) {
-                        best = Some(best.map_or(rate, |b| b.max(rate)));
-                    }
-                }
-                best.unwrap_or(self.config.inactive_rate)
-            }
+        if monitor::any_running(&self.config.programs) {
+            self.config.settings.active_rate
+        } else {
+            self.config.settings.inactive_rate
         }
+    }
+
+    /// Persist the settings after a tray menu change, then reapply.
+    fn commit_settings(&mut self) {
+        if let Err(err) = config::save_settings(&self.config.settings) {
+            self.notify("Could not save settings", &err);
+        }
+        self.evaluate();
     }
 
     /// Recompute the target rate and apply it if it changed.
@@ -161,9 +164,7 @@ impl App {
         };
 
         let Some(command) = self.config.command_for(rate) else {
-            self.device_error = Some(format!(
-                "no captured command for {rate} Hz, see docs/CAPTURE.md"
-            ));
+            self.device_error = Some(format!("no command for {rate} Hz on this mouse"));
             self.update_tray();
             return;
         };
@@ -178,7 +179,7 @@ impl App {
                 self.current_rate = Some(rate);
                 self.device_error = None;
                 self.update_tray();
-                if changed && self.config.notifications {
+                if changed && self.config.settings.notifications {
                     self.notify("Polling rate changed", &format!("{rate} Hz"));
                 }
             }
@@ -199,57 +200,61 @@ impl App {
         }
     }
 
-    fn toggle_mode(&mut self) {
-        self.config.mode = match self.config.mode {
-            Mode::Focus => Mode::Running,
-            Mode::Running => Mode::Focus,
-        };
+    fn toggle_notifications(&mut self) {
+        self.config.settings.notifications = !self.config.settings.notifications;
+        self.commit_settings();
+    }
+
+    /// The Run key is the only record of this, so there is no second copy in
+    /// settings that could drift out of step with what Windows actually does.
+    fn toggle_autostart(&mut self) {
+        let enabled = !autostart::is_enabled();
+        match autostart::apply(enabled) {
+            Ok(()) => {
+                let state = if enabled { "on" } else { "off" };
+                self.notify("Start with Windows", state);
+            }
+            Err(err) => self.notify("Could not change autostart", &err),
+        }
+    }
+
+    /// Apply a rate chosen from one of the two submenus.
+    fn choose_rate(&mut self, rate: u32, active: bool) {
+        if active {
+            self.config.settings.active_rate = rate;
+        } else {
+            self.config.settings.inactive_rate = rate;
+        }
+        self.commit_settings();
+    }
+
+    fn reload(&mut self) {
+        let (cfg, problems) = config::load();
+        self.apply_loaded(cfg);
+        if problems.is_empty() {
+            let count = self.config.programs.len();
+            self.notify("Reloaded", &format!("Watching {count} program(s)"));
+        } else {
+            // Defaults were substituted for whatever failed to parse, so keep
+            // running and say what was wrong.
+            self.notify("Config problem", &problems.join("\n"));
+        }
+    }
+
+    fn apply_loaded(&mut self, cfg: Config) {
+        self.config = cfg;
+        self.device = None; // reopen in case the protocol changed
+        self.current_rate = None;
         self.setup_triggers();
         self.evaluate();
     }
 
-    fn reload(&mut self) {
-        match config::load() {
-            Ok(cfg) => {
-                self.config = cfg;
-                self.device = None; // reopen with any new protocol settings
-                self.current_rate = None;
-                self.setup_triggers();
-                self.evaluate();
-                self.notify("Config reloaded", "Settings applied");
-            }
-            Err(err) => {
-                self.notify("Config error", &err);
-            }
-        }
-    }
-
-    /// Install the focus hook or the running mode timer for the current mode.
+    /// Start, or restart, the timer that rescans the process list.
     fn setup_triggers(&mut self) {
         unsafe {
-            if !self.hook.is_invalid() {
-                let _ = UnhookWinEvent(self.hook);
-                self.hook = HWINEVENTHOOK::default();
-            }
             let _ = KillTimer(self.hwnd, TIMER_ID);
-
-            match self.config.mode {
-                Mode::Focus => {
-                    self.hook = SetWinEventHook(
-                        EVENT_SYSTEM_FOREGROUND,
-                        EVENT_SYSTEM_FOREGROUND,
-                        HMODULE::default(),
-                        Some(win_event_proc),
-                        0,
-                        0,
-                        0x0000, // WINEVENT_OUTOFCONTEXT
-                    );
-                }
-                Mode::Running => {
-                    let interval = self.config.poll_interval_ms.max(250) as u32;
-                    SetTimer(self.hwnd, TIMER_ID, interval, None);
-                }
-            }
+            let interval = self.config.settings.poll_interval_ms.max(250) as u32;
+            SetTimer(self.hwnd, TIMER_ID, interval, None);
         }
     }
 
@@ -261,16 +266,12 @@ impl App {
                 .current_rate
                 .map(|r| format!("{r} Hz"))
                 .unwrap_or_else(|| "starting".to_string());
-            let mode = match self.config.mode {
-                Mode::Focus => "focus",
-                Mode::Running => "running",
-            };
             let paused = if self.paused { ", paused" } else { "" };
-            format!("Glorious Auto Polling Rate\n{rate}, {mode}{paused}")
+            format!("Glorious Auto Polling Rate\n{rate}{paused}")
         };
         set_wide_field(&mut self.nid.szTip, &tip);
 
-        let inactive = self.current_rate == Some(self.config.inactive_rate)
+        let inactive = self.current_rate == Some(self.config.settings.inactive_rate)
             || self.current_rate.is_none()
             || self.paused;
         self.nid.hIcon = if inactive {
@@ -295,35 +296,64 @@ impl App {
     }
 }
 
-/// The foreground change hook. Fires only when the active window changes.
-extern "system" fn win_event_proc(
-    _hook: HWINEVENTHOOK,
-    _event: u32,
-    _hwnd: HWND,
-    _id_object: i32,
-    _id_child: i32,
-    _thread: u32,
-    _time: u32,
-) {
-    APP.with(|app| {
-        if let Some(app) = app.borrow_mut().as_mut() {
-            app.evaluate();
-        }
-    });
+/// What the menu needs in order to draw itself. Captured up front so no borrow
+/// is held while TrackPopupMenu pumps messages.
+struct MenuState {
+    paused: bool,
+    active_rate: u32,
+    inactive_rate: u32,
+    notifications: bool,
+    autostart: bool,
+    rates: Vec<u32>,
+    programs: usize,
+}
+
+/// Append one of the two rate pickers as a submenu, with the current choice
+/// check marked. The parent takes ownership, so destroying it frees this too.
+unsafe fn append_rate_submenu(
+    parent: HMENU,
+    rates: &[u32],
+    current: u32,
+    base: usize,
+    label: &str,
+) -> Option<HMENU> {
+    let sub = CreatePopupMenu().ok()?;
+    for (index, rate) in rates.iter().enumerate().take(RATE_SPAN) {
+        let flags = if *rate == current {
+            MF_STRING | MF_CHECKED
+        } else {
+            MF_STRING
+        };
+        let text = wide(&format!("{rate} Hz"));
+        let _ = AppendMenuW(sub, flags, base + index, PCWSTR(text.as_ptr()));
+    }
+    let text = wide(&format!("{label}: {current} Hz"));
+    let _ = AppendMenuW(
+        parent,
+        MF_STRING | MF_POPUP,
+        sub.0 as usize,
+        PCWSTR(text.as_ptr()),
+    );
+    Some(sub)
 }
 
 /// Build and show the tray context menu, then act on the selection.
 fn show_menu(hwnd: HWND) {
     // Snapshot the state we need, then drop the borrow before TrackPopupMenu,
     // which pumps messages and could otherwise reenter the borrow.
-    let (paused, mode, other_mode) = APP.with(|app| {
+    let snapshot = APP.with(|app| {
         let app = app.borrow();
         let app = app.as_ref().unwrap();
-        let other = match app.config.mode {
-            Mode::Focus => "Switch to running mode",
-            Mode::Running => "Switch to focus mode",
-        };
-        (app.paused, app.config.mode, other.to_string())
+        let settings = &app.config.settings;
+        MenuState {
+            paused: app.paused,
+            active_rate: settings.active_rate,
+            inactive_rate: settings.inactive_rate,
+            notifications: settings.notifications,
+            autostart: autostart::is_enabled(),
+            rates: app.config.available_rates(),
+            programs: app.config.programs.len(),
+        }
     });
 
     unsafe {
@@ -332,14 +362,16 @@ fn show_menu(hwnd: HWND) {
             Err(_) => return,
         };
 
-        let header = match mode {
-            Mode::Focus => "Mode: focus",
-            Mode::Running => "Mode: running",
-        };
-        let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, PCWSTR(wide(header).as_ptr()));
+        let header = format!("Watching {} program(s)", snapshot.programs);
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING | MF_GRAYED,
+            0,
+            PCWSTR(wide(&header).as_ptr()),
+        );
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
 
-        let pause_flags = if paused {
+        let pause_flags = if snapshot.paused {
             MF_STRING | MF_CHECKED
         } else {
             MF_STRING
@@ -350,24 +382,60 @@ fn show_menu(hwnd: HWND) {
             CMD_PAUSE,
             PCWSTR(wide("Pause auto switching").as_ptr()),
         );
-        let _ = AppendMenuW(
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+
+        // The two rate pickers. A check mark shows the current choice.
+        let active_menu = append_rate_submenu(
             menu,
-            MF_STRING,
-            CMD_MODE,
-            PCWSTR(wide(&other_mode).as_ptr()),
+            &snapshot.rates,
+            snapshot.active_rate,
+            CMD_ACTIVE_BASE,
+            "Active rate",
         );
+        let inactive_menu = append_rate_submenu(
+            menu,
+            &snapshot.rates,
+            snapshot.inactive_rate,
+            CMD_INACTIVE_BASE,
+            "Inactive rate",
+        );
+
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(
             menu,
             MF_STRING,
-            CMD_RELOAD,
-            PCWSTR(wide("Reload config").as_ptr()),
+            CMD_OPEN_LIST,
+            PCWSTR(wide("Edit program list").as_ptr()),
         );
         let _ = AppendMenuW(
             menu,
             MF_STRING,
-            CMD_OPEN_CONFIG,
-            PCWSTR(wide("Open config file").as_ptr()),
+            CMD_RELOAD,
+            PCWSTR(wide("Reload program list").as_ptr()),
+        );
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+
+        let notify_flags = if snapshot.notifications {
+            MF_STRING | MF_CHECKED
+        } else {
+            MF_STRING
+        };
+        let _ = AppendMenuW(
+            menu,
+            notify_flags,
+            CMD_NOTIFICATIONS,
+            PCWSTR(wide("Show notifications").as_ptr()),
+        );
+        let autostart_flags = if snapshot.autostart {
+            MF_STRING | MF_CHECKED
+        } else {
+            MF_STRING
+        };
+        let _ = AppendMenuW(
+            menu,
+            autostart_flags,
+            CMD_AUTOSTART,
+            PCWSTR(wide("Start with Windows").as_ptr()),
         );
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(
@@ -377,6 +445,7 @@ fn show_menu(hwnd: HWND) {
             PCWSTR(wide("About and help").as_ptr()),
         );
         let _ = AppendMenuW(menu, MF_STRING, CMD_QUIT, PCWSTR(wide("Quit").as_ptr()));
+        let _ = (active_menu, inactive_menu);
 
         let mut point = windows::Win32::Foundation::POINT::default();
         let _ = GetCursorPos(&mut point);
@@ -397,16 +466,33 @@ fn show_menu(hwnd: HWND) {
     }
 }
 
+/// Apply a rate picked from one of the submenus, mapping the id back to a rate.
+fn dispatch_rate(cmd: usize, base: usize, active: bool) {
+    let index = cmd - base;
+    APP.with(|a| {
+        if let Some(app) = a.borrow_mut().as_mut() {
+            if let Some(rate) = app.config.available_rates().get(index).copied() {
+                app.choose_rate(rate, active);
+            }
+        }
+    });
+}
+
 fn dispatch_command(hwnd: HWND, cmd: usize) {
+    // The submenus own contiguous id ranges, so test those before the fixed ids.
+    if (CMD_ACTIVE_BASE..CMD_ACTIVE_BASE + RATE_SPAN).contains(&cmd) {
+        dispatch_rate(cmd, CMD_ACTIVE_BASE, true);
+        return;
+    }
+    if (CMD_INACTIVE_BASE..CMD_INACTIVE_BASE + RATE_SPAN).contains(&cmd) {
+        dispatch_rate(cmd, CMD_INACTIVE_BASE, false);
+        return;
+    }
+
     match cmd {
         CMD_PAUSE => APP.with(|a| {
             if let Some(app) = a.borrow_mut().as_mut() {
                 app.toggle_pause();
-            }
-        }),
-        CMD_MODE => APP.with(|a| {
-            if let Some(app) = a.borrow_mut().as_mut() {
-                app.toggle_mode();
             }
         }),
         CMD_RELOAD => APP.with(|a| {
@@ -414,8 +500,18 @@ fn dispatch_command(hwnd: HWND, cmd: usize) {
                 app.reload();
             }
         }),
-        CMD_OPEN_CONFIG => {
-            let path = config::config_path();
+        CMD_NOTIFICATIONS => APP.with(|a| {
+            if let Some(app) = a.borrow_mut().as_mut() {
+                app.toggle_notifications();
+            }
+        }),
+        CMD_AUTOSTART => APP.with(|a| {
+            if let Some(app) = a.borrow_mut().as_mut() {
+                app.toggle_autostart();
+            }
+        }),
+        CMD_OPEN_LIST => {
+            let path = config::process_list_path();
             let path = wide(&path.to_string_lossy());
             unsafe {
                 ShellExecuteW(
@@ -494,7 +590,7 @@ fn message_box(title: &str, body: &str) {
 /// Diagnostic that lists the HID collections we can see for the configured
 /// device. Handy while capturing or troubleshooting.
 fn run_list() {
-    let cfg = config::load().unwrap_or_default();
+    let (cfg, _) = config::load();
     let candidates = hid::enumerate(cfg.protocol.vid, cfg.protocol.pid);
     let mut text = format!(
         "vid {:#06x} pid {:#06x}\nfound {} HID collection(s):\n\n",
@@ -540,13 +636,29 @@ fn main() {
         return;
     }
 
-    let config = match config::load() {
-        Ok(c) => c,
-        Err(err) => {
-            message_box("Glorious Auto Polling Rate: config error", &err);
-            return;
-        }
-    };
+    // A missing settings file means this is a first run, which is the only
+    // moment we turn autostart on by ourselves. After that it is the user's
+    // choice and we leave the Run key alone.
+    let first_run = !config::settings_path().exists();
+
+    let (config, problems) = config::load();
+    if !problems.is_empty() {
+        message_box(
+            "Glorious Auto Polling Rate: config problem",
+            &format!(
+                "{}\n\nDefaults were used for whatever could not be read.",
+                problems.join("\n")
+            ),
+        );
+    }
+
+    if first_run {
+        let _ = autostart::enable();
+    } else if autostart::is_enabled() {
+        // Already opted in, so refresh the stored path in case the executable
+        // has been moved since the entry was written.
+        let _ = autostart::enable();
+    }
 
     unsafe {
         let hmodule: HMODULE = GetModuleHandleW(PCWSTR::null()).unwrap();
@@ -601,7 +713,6 @@ fn main() {
             current_rate: None,
             paused: false,
             hwnd,
-            hook: HWINEVENTHOOK::default(),
             icon_active,
             icon_inactive,
             nid,
@@ -629,9 +740,6 @@ fn main() {
         // Cleanup on quit.
         APP.with(|a| {
             if let Some(app) = a.borrow_mut().as_mut() {
-                if !app.hook.is_invalid() {
-                    let _ = UnhookWinEvent(app.hook);
-                }
                 let _ = KillTimer(app.hwnd, TIMER_ID);
                 let _ = Shell_NotifyIconW(NIM_DELETE, &app.nid);
             }
