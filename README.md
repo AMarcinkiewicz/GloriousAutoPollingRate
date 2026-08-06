@@ -65,23 +65,11 @@ There are only two things to know.
 
 **The rates come from the tray menu.** Right click the tray icon and pick an active rate and an inactive rate. The choice is applied at once and remembered.
 
-```
-Watching 3 program(s)
------------------------------
-Pause auto switching
------------------------------
-Active rate: 4000 Hz     >  125  250  500  1000  2000  [4000]
-Inactive rate: 500 Hz    >  125  250 [500] 1000  2000   4000
------------------------------
-Edit program list
-Reload program list
------------------------------
-Show notifications        [x]
-Start with Windows        [x]
------------------------------
-About and help
-Quit
-```
+<img src="assets/tray-menu.png" alt="The tray menu, showing the active and inactive rate pickers, the program list actions, and the notification and autostart toggles" width="236">
+
+Each rate opens a submenu of everything your mouse supports, with the current choice check marked.
+
+<img src="assets/tray-menu-rates.png" alt="The active rate submenu expanded, listing 125 through 4000 Hz with 4000 Hz check marked" width="369">
 
 **The programs come from a plain text file.** Choose Edit program list to open `processlist.cfg` in Notepad. One process name per line, including the `.exe`, matched case insensitively. Lines starting with `#` are ignored. Save, then choose Reload program list.
 

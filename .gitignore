@@ -1,7 +1,11 @@
 # Rust build output
 /target
 
-# The generated, per machine config. The template is config.example.toml.
+# Per machine files the tool writes next to itself, in case it is run from
+# the repository root during development.
+/settings.toml
+/processlist.cfg
+/protocol.toml
 /config.toml
 
 # Editor and OS noise
