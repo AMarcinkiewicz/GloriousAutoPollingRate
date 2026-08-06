@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The starting process list, written on first run.
 pub const DEFAULT_PROCESS_LIST: &str = "\
@@ -192,6 +192,21 @@ pub fn protocol_path() -> PathBuf {
     base_dir().join("protocol.toml")
 }
 
+/// Read a text file, dropping a leading byte order mark.
+///
+/// Several Windows editors offer, and some default to, "UTF-8 with BOM", which
+/// puts U+FEFF at the front of the file. It is not whitespace, so `trim` leaves
+/// it glued to the first line. In the process list that means the first program
+/// silently never matches, which looks exactly like the tool being broken. In a
+/// TOML file it fails the parse outright.
+fn read_text(path: &Path) -> std::io::Result<String> {
+    let mut text = std::fs::read_to_string(path)?;
+    if text.starts_with('\u{feff}') {
+        text.remove(0);
+    }
+    Ok(text)
+}
+
 /// Parse a process list. Blank lines and `#` comments are skipped, and names
 /// are lowercased so matching is a plain comparison.
 fn parse_process_list(text: &str) -> Vec<String> {
@@ -227,7 +242,7 @@ pub fn load() -> (Config, Vec<String>) {
     if !settings_file.exists() {
         let _ = save_settings(&Settings::default());
     }
-    let settings = match std::fs::read_to_string(&settings_file) {
+    let settings = match read_text(&settings_file) {
         Ok(text) => match toml::from_str::<Settings>(&text) {
             Ok(s) => s,
             Err(e) => {
@@ -243,7 +258,7 @@ pub fn load() -> (Config, Vec<String>) {
     if !list_file.exists() {
         let _ = std::fs::write(&list_file, DEFAULT_PROCESS_LIST);
     }
-    let programs = match std::fs::read_to_string(&list_file) {
+    let programs = match read_text(&list_file) {
         Ok(text) => parse_process_list(&text),
         Err(_) => Vec::new(),
     };
@@ -251,7 +266,7 @@ pub fn load() -> (Config, Vec<String>) {
     // Protocol, built in unless an override file exists.
     let protocol_file = protocol_path();
     let protocol = if protocol_file.exists() {
-        match std::fs::read_to_string(&protocol_file) {
+        match read_text(&protocol_file) {
             Ok(text) => match toml::from_str::<Protocol>(&text) {
                 Ok(p) => p,
                 Err(e) => {
