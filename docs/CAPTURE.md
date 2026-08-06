@@ -105,7 +105,7 @@ If your capture showed a report id at the front, keep `method = "feature"`. That
 
 1. Save `protocol.toml`.
 2. Right click the tray icon and choose Reload program list, or restart the tool.
-3. Switch to a program you configured, or open the game you listed. The tray tooltip should now show the new rate, and you will get a notification if notifications are on.
+3. Open a game you listed. The tray tooltip should now show the new rate, the icon should go from grey to coloured, and you should get a notification if you have those on. Note that opening a listed program is the only thing that notifies, so use that rather than the tray menu to test.
 4. Confirm the rate really changed. You can open a polling rate checker, or simply feel the difference in game. Glorious CORE may still show its old value, because the tool talks to the mouse directly and does not update the CORE interface.
 
 ## If you get stuck
