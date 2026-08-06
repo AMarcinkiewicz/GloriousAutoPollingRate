@@ -1,0 +1,12 @@
+# Rust build output
+/target
+
+# The generated, per machine config. The template is config.example.toml.
+/config.toml
+
+# Editor and OS noise
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini

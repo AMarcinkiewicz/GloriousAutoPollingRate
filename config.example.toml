@@ -1,0 +1,72 @@
+# Glorious Auto Polling Rate configuration
+#
+# This file lives next to the executable and is created automatically on first
+# run. Edit it, then choose "Reload config" from the tray menu to apply changes.
+
+# Switching strategy.
+#   "focus"   follow the focused window. The foreground app decides the rate.
+#   "running" follow running processes. If any listed program is running, its
+#             rate is used (the highest wins when several match).
+mode = "focus"
+
+# Rate in Hz used when nothing matches. This is your battery saving rate.
+inactive_rate = 500
+
+# Rate in Hz for listed programs that do not set their own rate.
+active_rate = 1000
+
+# How often "running" mode rescans processes, in milliseconds. Ignored in
+# "focus" mode, which is fully event driven and uses no CPU while idle.
+poll_interval_ms = 2000
+
+# Show a small tray notification whenever the rate changes.
+notifications = true
+
+# The programs to watch. Add one block per program.
+# "exe" is the executable name and is matched case insensitively.
+# "rate" is optional. When omitted, active_rate is used.
+#
+# [[programs]]
+# exe = "cs2.exe"
+# rate = 4000
+#
+# [[programs]]
+# exe = "valorant.exe"
+# rate = 2000
+#
+# [[programs]]
+# exe = "chrome.exe"   # no rate, so active_rate (1000) is used
+
+[[programs]]
+exe = "cs2.exe"
+rate = 4000
+
+[[programs]]
+exe = "valorant.exe"
+rate = 2000
+
+# Device protocol.
+#
+# The command bytes below are the exact reports the mouse expects for each
+# polling rate. They are captured once for your specific device and pasted in
+# here. Until they are filled in, the tool runs but cannot change the rate.
+#
+# See docs/CAPTURE.md for the one time capture steps.
+[protocol]
+vid = 0x258A          # Glorious
+pid = 0x2036          # Model D2 Pro 4K dongle
+usage_page = 0xFFFF   # vendor collection to open, 0 to disable the filter
+usage = 0             # vendor usage to match, 0 to disable the filter
+method = "feature"    # "feature" (HidD_SetFeature) or "output" (WriteFile)
+report_length = 0     # 0 uses the device report length, or force a length
+
+# Full report bytes per rate, including the leading report id.
+# Empty arrays mean the command is not known yet.
+[protocol.commands]
+"125"  = []
+"250"  = []
+"500"  = []
+"1000" = []
+"2000" = []
+"4000" = []
+"8000" = []
