@@ -24,8 +24,11 @@ use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
-/// Upper bound on pids we will look at in one pass. Far above any real machine.
-const MAX_PIDS: usize = 4096;
+/// Starting size of the pid buffer. Comfortably above a normal machine, which
+/// runs a couple of hundred processes, but grown rather than trusted. A buffer
+/// that fills exactly is indistinguishable from one that overflowed, and an
+/// overflow would silently hide whichever processes did not fit.
+const INITIAL_PIDS: usize = 4096;
 
 /// Resolve one pid to a lower case executable file name.
 ///
@@ -79,38 +82,51 @@ impl Watcher {
         }
     }
 
-    /// Fill `self.pids` with the current pid list, returning how many there are.
-    fn enumerate(&mut self) -> usize {
-        self.pids.resize(MAX_PIDS, 0);
-        let mut needed: u32 = 0;
-        unsafe {
-            if EnumProcesses(
-                self.pids.as_mut_ptr(),
-                (MAX_PIDS * std::mem::size_of::<u32>()) as u32,
-                &mut needed,
-            )
-            .is_err()
-            {
-                self.pids.clear();
-                return 0;
+    /// Fill `self.pids` with the current pid list.
+    ///
+    /// `None` means the call failed and we know nothing, which is not the same
+    /// as knowing nothing is running. The caller must not collapse the two.
+    fn enumerate(&mut self) -> Option<()> {
+        let mut capacity = self.pids.capacity().max(INITIAL_PIDS);
+        loop {
+            self.pids.clear();
+            self.pids.resize(capacity, 0);
+            let mut needed: u32 = 0;
+            unsafe {
+                EnumProcesses(
+                    self.pids.as_mut_ptr(),
+                    (capacity * std::mem::size_of::<u32>()) as u32,
+                    &mut needed,
+                )
+                .ok()?;
             }
+            let count = needed as usize / std::mem::size_of::<u32>();
+            // A full buffer means the list was probably cut short. Windows
+            // reports the bytes written here, not the bytes required, so there
+            // is no way to ask how many were missed. Grow and ask again.
+            if count == capacity {
+                capacity *= 2;
+                continue;
+            }
+            self.pids.truncate(count);
+            return Some(());
         }
-        let count = needed as usize / std::mem::size_of::<u32>();
-        self.pids.truncate(count);
-        count
     }
 
     /// Whether any of the given executable names is currently running.
     ///
+    /// `None` means this tick could not tell. The caller should hold its
+    /// previous answer rather than treat it as nothing running, because a
+    /// momentary "no" would drop the polling rate mid game and would re arm the
+    /// notification that fires when the active rate comes back on.
+    ///
     /// `wanted` must already be lower cased, which is how the process list is
     /// stored.
-    pub fn any_running(&mut self, wanted: &[String]) -> bool {
+    pub fn any_running(&mut self, wanted: &[String]) -> Option<bool> {
         if wanted.is_empty() {
-            return false;
+            return Some(false);
         }
-        if self.enumerate() == 0 {
-            return false;
-        }
+        self.enumerate()?;
 
         // Reconcile against the live set every call. Only pruning when the count
         // shrinks would be cheaper, but one process exiting while another starts
@@ -129,11 +145,11 @@ impl Watcher {
             }
             if let Some(Some(name)) = self.seen.get(&pid) {
                 if wanted.iter().any(|w| w == name) {
-                    return true;
+                    return Some(true);
                 }
             }
         }
-        false
+        Some(false)
     }
 }
 

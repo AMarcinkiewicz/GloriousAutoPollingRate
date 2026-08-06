@@ -16,7 +16,7 @@ Running, not focused. Alt tab to Discord mid match and the rate stays high, beca
 - A plain text list of programs. One `.exe` per line.
 - Starts with Windows by default, with a tray toggle to turn it off.
 - Pause switching from the tray at any time.
-- Optional notification on each change.
+- Optional notification when a game you listed turns the active rate on.
 
 ## Supported mice
 
@@ -47,9 +47,9 @@ Windows 10 or 11, 64 bit.
 
 <img src="assets/tray-icon-states.png" alt="The tray icon in both states, grey for the inactive 500 Hz rate and teal for the active 4000 Hz rate" width="362">
 
-**A notification fires on each change**, if you leave that on. Nothing appears while the rate is holding steady.
+**A notification fires when a program on your list opens** and the active rate goes on, if you leave that on. That is the only thing it announces. Dropping back to the inactive rate is silent, and so is anything you do from the menu yourself, so reloading the list or picking a rate does not set off a string of popups.
 
-<img src="assets/notification.png" alt="A Windows notification reading Polling rate changed, 4000 Hz" width="380">
+<img src="assets/notification.png" alt="A Windows notification reading Active polling rate on, 4000 Hz" width="370">
 
 **Programs come from a plain text file.** Edit program list opens `processlist.cfg` in Notepad. One name per line including the `.exe`, matched case insensitively, `#` for comments. Save, then Reload program list.
 
@@ -103,6 +103,10 @@ Build it yourself with the self contained GNU toolchain, no Visual Studio requir
 rustup default stable-x86_64-pc-windows-gnu
 cargo build --release
 ```
+
+## Credits
+
+Inspired by [RazerAutoPollingRate](https://github.com/philipbry/RazerAutoPollingRate), which does the same job for Razer mice and which I used back when I was on a DeathAdder V3 Pro. Same idea, different mouse, and a much smaller build.
 
 ## Disclaimer
 

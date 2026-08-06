@@ -67,6 +67,16 @@ thread_local! {
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
 }
 
+/// Whether an evaluation is allowed to raise a notification. Manual actions
+/// pass `Yes`, because the user already knows what they did and does not need
+/// telling; only the timer, where a change can happen behind your back, passes
+/// `No`.
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum Silent {
+    Yes,
+    No,
+}
+
 /// All runtime state, owned on the single UI thread.
 struct App {
     config: Config,
@@ -74,6 +84,14 @@ struct App {
     device_error: Option<String>,
     current_rate: Option<u32>,
     paused: bool,
+    /// Whether a listed program was running as of the last evaluation. `None`
+    /// until the first one. Only a false to true edge in here is worth
+    /// announcing, which is what keeps the notification off every other path.
+    programs_running: Option<bool>,
+    /// Set when that edge happens, cleared by the write that acts on it. Held
+    /// across a failed write so an unplugged dongle delays the notification
+    /// rather than swallowing it.
+    announce_pending: bool,
     /// Keeps resolved process names between ticks. See `monitor`.
     watcher: monitor::Watcher,
     hwnd: HWND,
@@ -126,35 +144,56 @@ fn load_icon(bytes: &[u8]) -> Option<HICON> {
 }
 
 impl App {
-    /// The active rate applies while any listed program is running, whether or
-    /// not you are tabbed into it. Otherwise the inactive rate applies.
-    fn desired_rate(&mut self) -> u32 {
-        if self.watcher.any_running(&self.config.programs) {
-            self.config.settings.active_rate
-        } else {
-            self.config.settings.inactive_rate
-        }
-    }
-
     /// Persist the settings after a tray menu change, then reapply.
     fn commit_settings(&mut self) {
         if let Err(err) = config::save_settings(&self.config.settings) {
             self.notify("Could not save settings", &err);
         }
-        self.evaluate();
+        self.evaluate(Silent::Yes);
     }
 
     /// Recompute the target rate and apply it if it changed.
-    fn evaluate(&mut self) {
+    ///
+    /// The active rate applies while any listed program is running, whether or
+    /// not you are tabbed into it. Otherwise the inactive rate applies.
+    fn evaluate(&mut self, silent: Silent) {
         if self.paused {
             return;
         }
-        let rate = self.desired_rate();
+
+        // A tick that could not read the process list holds the last answer.
+        // Treating it as nothing running would drop the rate mid game, and
+        // worse, the recovery would look like a fresh start and notify again.
+        let Some(running) = self.watcher.any_running(&self.config.programs) else {
+            return;
+        };
+
+        // Worth announcing only when a program starting is what turned the
+        // active rate on. Anything the user just clicked stays quiet, and so
+        // does the drop back to the inactive rate. Because this is an edge and
+        // not a level, a program that stays open notifies once and then never
+        // again, however many ticks pass.
+        if silent == Silent::No && self.programs_running == Some(false) && running {
+            self.announce_pending = true;
+        }
+        if !running {
+            self.announce_pending = false;
+        }
+        self.programs_running = Some(running);
+
+        let rate = if running {
+            self.config.settings.active_rate
+        } else {
+            self.config.settings.inactive_rate
+        };
         self.set_rate(rate);
     }
 
     fn set_rate(&mut self, rate: u32) {
         if self.current_rate == Some(rate) && self.device_error.is_none() {
+            // Already there, so nothing turned on and there is nothing to say.
+            // Covers the case of both rates being set to the same value.
+            self.announce_pending = false;
             return;
         }
 
@@ -179,12 +218,15 @@ impl App {
             command,
         ) {
             Ok(()) => {
-                let changed = self.current_rate != Some(rate);
                 self.current_rate = Some(rate);
                 self.device_error = None;
                 self.update_tray();
-                if changed && self.config.settings.notifications {
-                    self.notify("Polling rate changed", &format!("{rate} Hz"));
+                // Cleared whether or not it is shown, so a notification can
+                // never be held over and fired against a later change.
+                if std::mem::take(&mut self.announce_pending)
+                    && self.config.settings.notifications
+                {
+                    self.notify("Active polling rate on", &format!("{rate} Hz"));
                 }
             }
             Err(err) => {
@@ -200,7 +242,7 @@ impl App {
         if self.paused {
             self.update_tray();
         } else {
-            self.evaluate();
+            self.evaluate(Silent::Yes);
         }
     }
 
@@ -235,10 +277,10 @@ impl App {
     fn reload(&mut self) {
         let (cfg, problems) = config::load();
         self.apply_loaded(cfg);
-        if problems.is_empty() {
-            let count = self.config.programs.len();
-            self.notify("Reloaded", &format!("Watching {count} program(s)"));
-        } else {
+        // No notification on success. The menu header already gives the count,
+        // and a reload is something you just asked for, so saying so back is
+        // noise. Problems still speak up, since nothing else would show them.
+        if !problems.is_empty() {
             // Defaults were substituted for whatever failed to parse, so keep
             // running and say what was wrong.
             self.notify("Config problem", &problems.join("\n"));
@@ -250,7 +292,7 @@ impl App {
         self.device = None; // reopen in case the protocol changed
         self.current_rate = None;
         self.setup_triggers();
-        self.evaluate();
+        self.evaluate(Silent::Yes);
     }
 
     /// Start, or restart, the timer that rescans the process list.
@@ -314,14 +356,10 @@ struct MenuState {
 
 /// Append one of the two rate pickers as a submenu, with the current choice
 /// check marked. The parent takes ownership, so destroying it frees this too.
-unsafe fn append_rate_submenu(
-    parent: HMENU,
-    rates: &[u32],
-    current: u32,
-    base: usize,
-    label: &str,
-) -> Option<HMENU> {
-    let sub = CreatePopupMenu().ok()?;
+unsafe fn append_rate_submenu(parent: HMENU, rates: &[u32], current: u32, base: usize, label: &str) {
+    let Ok(sub) = CreatePopupMenu() else {
+        return;
+    };
     for (index, rate) in rates.iter().enumerate().take(RATE_SPAN) {
         let flags = if *rate == current {
             MF_STRING | MF_CHECKED
@@ -332,13 +370,18 @@ unsafe fn append_rate_submenu(
         let _ = AppendMenuW(sub, flags, base + index, PCWSTR(text.as_ptr()));
     }
     let text = wide(&format!("{label}: {current} Hz"));
-    let _ = AppendMenuW(
+    if AppendMenuW(
         parent,
         MF_STRING | MF_POPUP,
         sub.0 as usize,
         PCWSTR(text.as_ptr()),
-    );
-    Some(sub)
+    )
+    .is_err()
+    {
+        // Ownership only transfers on success. Left alone this would outlive
+        // the menu it was meant to hang from and leak on every right click.
+        let _ = DestroyMenu(sub);
+    }
 }
 
 /// Build and show the tray context menu, then act on the selection.
@@ -389,14 +432,14 @@ fn show_menu(hwnd: HWND) {
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
 
         // The two rate pickers. A check mark shows the current choice.
-        let active_menu = append_rate_submenu(
+        append_rate_submenu(
             menu,
             &snapshot.rates,
             snapshot.active_rate,
             CMD_ACTIVE_BASE,
             "Active rate",
         );
-        let inactive_menu = append_rate_submenu(
+        append_rate_submenu(
             menu,
             &snapshot.rates,
             snapshot.inactive_rate,
@@ -449,7 +492,6 @@ fn show_menu(hwnd: HWND) {
             PCWSTR(wide("About and help").as_ptr()),
         );
         let _ = AppendMenuW(menu, MF_STRING, CMD_QUIT, PCWSTR(wide("Quit").as_ptr()));
-        let _ = (active_menu, inactive_menu);
 
         let mut point = windows::Win32::Foundation::POINT::default();
         let _ = GetCursorPos(&mut point);
@@ -573,7 +615,7 @@ extern "system" fn window_proc(
         WM_TIMER => {
             APP.with(|a| {
                 if let Some(app) = a.borrow_mut().as_mut() {
-                    app.evaluate();
+                    app.evaluate(Silent::No);
                 }
             });
             LRESULT(0)
@@ -744,6 +786,8 @@ fn main() {
             device_error: None,
             current_rate: None,
             paused: false,
+            programs_running: None,
+            announce_pending: false,
             watcher: monitor::Watcher::new(),
             hwnd,
             icon_active,
@@ -756,7 +800,7 @@ fn main() {
         APP.with(|a| {
             if let Some(app) = a.borrow_mut().as_mut() {
                 app.setup_triggers();
-                app.evaluate();
+                app.evaluate(Silent::Yes);
             }
         });
 

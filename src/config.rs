@@ -75,7 +75,8 @@ pub struct Settings {
     pub active_rate: u32,
     /// Rate in Hz the rest of the time. This is the battery saving rate.
     pub inactive_rate: u32,
-    /// Show a tray notification whenever the rate changes.
+    /// Show a tray notification when a program starting turns the active rate
+    /// on. Nothing else notifies, so the tray stays quiet the rest of the time.
     pub notifications: bool,
     /// How often the process list is rescanned, in milliseconds.
     pub poll_interval_ms: u64,
