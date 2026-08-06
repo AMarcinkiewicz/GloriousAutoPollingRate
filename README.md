@@ -1,6 +1,6 @@
 # Glorious Auto Polling Rate
 
-A tiny Windows tray tool that raises your Glorious mouse polling rate while a game is open and drops it back the rest of the time. High rate when it matters, low rate to save wireless battery, and you never think about it.
+A tiny Windows tray tool that raises your Glorious mouse polling rate while a game is open and drops it back the rest of the time. High rate when it matters, low rate to save wireless battery, and you never think about it. Built for the Model D2 Pro 4K, and adaptable to other Glorious mice.
 
 <img src="assets/tray-menu.png" alt="The tray menu, showing the active and inactive rate pickers, the program list actions, and the notification and autostart toggles" width="236">
 
@@ -76,6 +76,29 @@ All next to the executable, all safe to delete.
 - **Tooltip says there is no command for a rate.** A `protocol.toml` is present and incomplete. Delete it to go back to the built in commands.
 - **You still have a `config.toml` from an old version.** It is no longer read and can be deleted.
 - **You want to see which HID collections it can find.** Run `GloriousAutoPollingRate.exe --list`, then open the `devices.txt` it writes next to the executable. It is a windowed program with no console, so running it from a terminal prints nothing.
+
+## Common questions
+
+**Why does 4000 Hz drain my wireless mouse battery so fast?**
+The polling rate is how many times a second the mouse reports to the PC, so 4000 Hz is four times the radio traffic of 1000 Hz, and on a wireless mouse the radio is a large part of what the battery goes on. That is the whole reason this exists. The high rate is worth having in a game and does nothing for you on the desktop.
+
+**Can Glorious CORE set a different polling rate per game?**
+No. CORE has a single polling rate that applies everywhere, so doing it per game means opening CORE and clicking every time. This watches for the programs you list and switches for you.
+
+**Does Glorious CORE need to be running?**
+No, and it is better if it is not. This talks to the mouse over HID directly. If CORE is open it can set the rate back to its own value.
+
+**Does it need admin rights?**
+No. It keeps its files next to itself and writes its start with Windows entry to the per user Run key. Put it somewhere like `C:\Tools\` rather than Program Files and nothing ever prompts.
+
+**Why does CORE still show the old polling rate?**
+Because the rate was written straight to the mouse and CORE was not told. The mouse really is at the new rate. If you want to confirm it, an online polling rate checker will show it while you move the mouse.
+
+**What about 8000 Hz?**
+The menu offers 125 up to 4000 Hz, which is what the 4K dongle exposes. An 8K dongle would need its own capture, the same as any other Glorious model.
+
+**Is there one of these for Razer mice?**
+Yes, [RazerAutoPollingRate](https://github.com/philipbry/RazerAutoPollingRate), which is what gave me the idea.
 
 ## Using a different Glorious mouse
 
