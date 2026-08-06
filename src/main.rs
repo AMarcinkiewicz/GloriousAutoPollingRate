@@ -3,8 +3,9 @@
 //! Glorious Auto Polling Rate.
 //!
 //! A tiny Windows tray tool that switches the mouse polling rate automatically
-//! based on the focused application or the set of running programs. It is event
-//! driven, so it uses no measurable CPU while idle.
+//! based on whether any watched program is running. The window sits blocked in
+//! GetMessageW, so the only work it ever does is one process list scan per
+//! timer tick.
 
 mod autostart;
 mod config;
@@ -12,6 +13,7 @@ mod hid;
 mod monitor;
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 
 use config::Config;
 use hid::Device;
@@ -72,6 +74,8 @@ struct App {
     device_error: Option<String>,
     current_rate: Option<u32>,
     paused: bool,
+    /// Keeps resolved process names between ticks. See `monitor`.
+    watcher: monitor::Watcher,
     hwnd: HWND,
     icon_active: HICON,
     icon_inactive: HICON,
@@ -124,8 +128,8 @@ fn load_icon(bytes: &[u8]) -> Option<HICON> {
 impl App {
     /// The active rate applies while any listed program is running, whether or
     /// not you are tabbed into it. Otherwise the inactive rate applies.
-    fn desired_rate(&self) -> u32 {
-        if monitor::any_running(&self.config.programs) {
+    fn desired_rate(&mut self) -> u32 {
+        if self.watcher.any_running(&self.config.programs) {
             self.config.settings.active_rate
         } else {
             self.config.settings.inactive_rate
@@ -609,7 +613,21 @@ fn run_list() {
         ));
     }
 
-    // Print to the console when one is attached, otherwise show a dialog.
+    // Always leave the report on disk. This is a windows subsystem binary, so
+    // it gets no console of its own and stdout goes nowhere when it is started
+    // from a terminal. The file is the only delivery that works every time, and
+    // it is also the thing to paste when asking for help.
+    let mut written: Option<PathBuf> = None;
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let path = dir.join("devices.txt");
+            if std::fs::write(&path, &text).is_ok() {
+                written = Some(path);
+            }
+        }
+    }
+
+    // Then try to show it as well, for whoever is watching.
     let has_console = unsafe {
         !windows::Win32::System::Console::GetConsoleWindow()
             .0
@@ -617,23 +635,29 @@ fn run_list() {
     };
     if has_console {
         println!("{text}");
-    } else {
-        message_box("Glorious Auto Polling Rate: devices", &text);
     }
+    let shown = match &written {
+        Some(path) => format!("{text}\nSaved to {}", path.display()),
+        None => text,
+    };
+    message_box("Glorious Auto Polling Rate: devices", &shown);
 }
 
 fn main() {
+    // The diagnostic runs before the single instance guard on purpose. It only
+    // reads, and the tray copy is normally already running when someone reaches
+    // for it, so guarding it first would make it print nothing at all.
+    if std::env::args().any(|a| a == "--list") {
+        run_list();
+        return;
+    }
+
     // Single instance guard.
     unsafe {
         let _ = CreateMutexW(None, false, w!("Global\\GloriousAutoPollingRate"));
         if GetLastError() == ERROR_ALREADY_EXISTS {
             return;
         }
-    }
-
-    if std::env::args().any(|a| a == "--list") {
-        run_list();
-        return;
     }
 
     // A missing settings file means this is a first run, which is the only
@@ -712,6 +736,7 @@ fn main() {
             device_error: None,
             current_rate: None,
             paused: false,
+            watcher: monitor::Watcher::new(),
             hwnd,
             icon_active,
             icon_inactive,

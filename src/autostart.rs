@@ -42,7 +42,12 @@ fn open_run_key(access: windows::Win32::System::Registry::REG_SAM_FLAGS) -> Opti
     }
 }
 
-/// Whether the Run value currently points at this executable.
+/// Whether a Run value under our name exists at all.
+///
+/// Deliberately not a check that it points at *this* executable. The menu is
+/// reporting whether Windows will start the tool at sign in, and it will,
+/// whichever copy the value names. `enable` refreshes the path anyway on every
+/// start, so a stale path corrects itself.
 pub fn is_enabled() -> bool {
     let Some(key) = open_run_key(KEY_READ) else {
         return false;
