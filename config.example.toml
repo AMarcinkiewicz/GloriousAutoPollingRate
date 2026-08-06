@@ -48,10 +48,9 @@ rate = 2000
 # Device protocol.
 #
 # The command bytes below are the exact reports the mouse expects for each
-# polling rate. They are captured once for your specific device and pasted in
-# here. Until they are filled in, the tool runs but cannot change the rate.
-#
-# See docs/CAPTURE.md for the one time capture steps.
+# polling rate. They were captured from Glorious CORE on a Model D2 Pro 4K and
+# should work as is for that device. If you have different hardware, see
+# docs/CAPTURE.md for the one time capture steps.
 [protocol]
 vid = 0x258A          # Glorious
 pid = 0x2036          # Model D2 Pro 4K dongle
@@ -61,12 +60,31 @@ method = "feature"    # "feature" (HidD_SetFeature) or "output" (WriteFile)
 report_length = 0     # 0 uses the device report length, or force a length
 
 # Full report bytes per rate, including the leading report id.
-# Empty arrays mean the command is not known yet.
+#
+# Layout of the report, as observed on the wire:
+#
+#   00        report id
+#   00 00     header
+#   02        write command
+#   03        payload length that follows the setting id
+#   01        bank
+#   0A        setting id, 0x0A is the polling rate
+#   01        count
+#   XX XX     the rate code, sent twice
+#
+# Trailing zeros up to the 65 byte feature report are added automatically, so
+# only the meaningful head of the report is listed here.
+#
+# Rate codes: 125 = 0x08, 250 = 0x04, 500 = 0x02, 1000 = 0x01,
+#             2000 = 0x20, 4000 = 0x40.
+#
+# An empty array means the command is not known, and that rate is unavailable.
+# The 4K dongle tops out at 4000, so 8000 is left empty.
 [protocol.commands]
-"125"  = []
-"250"  = []
-"500"  = []
-"1000" = []
-"2000" = []
-"4000" = []
+"125"  = [0x00, 0x00, 0x00, 0x02, 0x03, 0x01, 0x0A, 0x01, 0x08, 0x08]
+"250"  = [0x00, 0x00, 0x00, 0x02, 0x03, 0x01, 0x0A, 0x01, 0x04, 0x04]
+"500"  = [0x00, 0x00, 0x00, 0x02, 0x03, 0x01, 0x0A, 0x01, 0x02, 0x02]
+"1000" = [0x00, 0x00, 0x00, 0x02, 0x03, 0x01, 0x0A, 0x01, 0x01, 0x01]
+"2000" = [0x00, 0x00, 0x00, 0x02, 0x03, 0x01, 0x0A, 0x01, 0x20, 0x20]
+"4000" = [0x00, 0x00, 0x00, 0x02, 0x03, 0x01, 0x0A, 0x01, 0x40, 0x40]
 "8000" = []

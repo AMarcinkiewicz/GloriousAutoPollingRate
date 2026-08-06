@@ -33,20 +33,22 @@ Measured on the release build:
 ## Requirements
 
 - Windows 10 or 11, 64 bit.
-- A Glorious mouse whose polling rate command bytes you have captured once (see the note below). The defaults target the Model D2 Pro 4K dongle, USB id `258A:2036`.
+- A Glorious Model D2 Pro 4K, USB id `258A:2036`. Other Glorious mice need a one time capture, see the note below.
 
-## Important: the one time capture step
+## How the mouse is driven
 
-There is no public API to set a Glorious polling rate, so this tool speaks to the mouse directly using HID feature reports. The exact bytes for each rate are specific to your device and firmware, so they are not shipped in the binary. You capture them once and paste them into `config.toml`. This keeps the tool honest: it will never send random bytes to your hardware.
+There is no public API to set a Glorious polling rate, so this tool speaks to the mouse directly using HID feature reports. The bytes are not hidden in the binary. They live in `config.toml` under `[protocol.commands]`, one report per rate, so you can read exactly what gets sent to your hardware and change it if you need to.
 
-The capture takes about fifteen minutes with Wireshark. Full step by step instructions are in [docs/CAPTURE.md](docs/CAPTURE.md). Until the bytes are filled in, the tool runs and shows its tray icon, but it reports that it has no command for the requested rate.
+The Model D2 Pro 4K commands ship filled in and are verified working, so there is nothing to capture for that mouse. Supported rates are 125, 250, 500, 1000, 2000 and 4000 Hz.
+
+If you have a different Glorious mouse, the reports will differ. Capturing your own takes about fifteen minutes with Wireshark, and [docs/CAPTURE.md](docs/CAPTURE.md) walks through it. Until a rate has bytes, the tool runs and shows its tray icon but reports that it has no command for that rate.
 
 ## Download and install
 
 1. Go to the [Releases](https://github.com/amarcinkiewicz/GloriousAutoPollingRate/releases) page and download `GloriousAutoPollingRate.exe`.
 2. Put it in a folder you like, for example `C:\Tools\GloriousAutoPollingRate\`.
 3. Double click it. A mouse icon appears in the system tray and a `config.toml` file is created next to the executable.
-4. Follow [docs/CAPTURE.md](docs/CAPTURE.md) to capture your rate commands, then paste them into `config.toml`.
+4. Edit `config.toml` to list the programs you care about. On a Model D2 Pro 4K the rate commands are already filled in. On any other Glorious mouse, follow [docs/CAPTURE.md](docs/CAPTURE.md) to capture yours first.
 5. Right click the tray icon and choose Reload config.
 
 That is the whole install. There is no installer and nothing runs in the background except the tool itself.
@@ -102,7 +104,7 @@ It will now start quietly at login.
 ## Troubleshooting
 
 - The tray tooltip says the mouse was not found. Make sure the 4K dongle is plugged in, then right click and choose Reload config. If you use a different Glorious model, set the correct `vid` and `pid` in the config.
-- The tooltip says there is no captured command for a rate. That rate has no bytes in `config.toml` yet. Capture it, see [docs/CAPTURE.md](docs/CAPTURE.md).
+- The tooltip says there is no captured command for a rate. That rate has an empty array in `config.toml`. On the Model D2 Pro 4K this is expected for 8000, which the 4K dongle does not offer. For any other rate or a different mouse, capture it, see [docs/CAPTURE.md](docs/CAPTURE.md).
 - You want to see which HID collections the tool can find. Run `GloriousAutoPollingRate.exe --list` from a terminal. It prints every matching collection with its usage page and report lengths, which is exactly what you need while capturing.
 
 ## Build from source
