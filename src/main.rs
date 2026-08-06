@@ -467,6 +467,14 @@ fn show_menu(hwnd: HWND) {
         let _ = DestroyMenu(menu);
 
         dispatch_command(hwnd, cmd.0 as usize);
+
+        // Showing a menu drags in the shell UI libraries, comctl32, shell32,
+        // uxtheme and friends, which is most of this process's working set.
+        // They are not needed again until the next time someone opens the menu,
+        // so hand them back. Opening the menu is a deliberate, occasional act,
+        // and paying a few page faults for the next one is a good trade for not
+        // sitting on the memory in between.
+        trim_working_set();
     }
 }
 
