@@ -14,6 +14,7 @@ mod monitor;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use config::Config;
 use hid::Device;
@@ -31,11 +32,11 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconFromResourceEx, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
     DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, KillTimer,
-    LookupIconIdFromDirectoryEx, MessageBoxW, PostQuitMessage, RegisterClassW, SetForegroundWindow,
-    SetTimer, TrackPopupMenu, TranslateMessage, HICON, HMENU, HWND_MESSAGE,
-    IMAGE_FLAGS, MB_ICONINFORMATION, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG,
-    SW_SHOWNORMAL, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_APP, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
+    LookupIconIdFromDirectoryEx, MessageBoxW, PostQuitMessage, RegisterClassW,
+    RegisterWindowMessageW, SetForegroundWindow, SetTimer, TrackPopupMenu, TranslateMessage, HICON,
+    HMENU, IMAGE_FLAGS, MB_ICONINFORMATION, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR,
+    MF_STRING, MSG, SW_SHOWNORMAL, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_STYLE,
+    WM_APP, WM_DESTROY, WM_LBUTTONUP, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_TOOLWINDOW,
 };
 
 const REPO_URL: &str = "https://github.com/amarcinkiewicz/GloriousAutoPollingRate";
@@ -56,6 +57,14 @@ const CMD_GITHUB: usize = 14;
 const CMD_QUIT: usize = 15;
 const CMD_NOTIFICATIONS: usize = 16;
 const CMD_AUTOSTART: usize = 17;
+
+/// The `TaskbarCreated` broadcast, resolved at startup.
+///
+/// Explorer sends this to every top level window once it has rebuilt the tray,
+/// and it is the only notice we get that the icon we added no longer exists.
+/// Zero means the registration failed, which must never be treated as a match,
+/// since real messages start at zero.
+static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
 /// Rate submenu ids are a base plus the index into the available rate list.
 const CMD_ACTIVE_BASE: usize = 100;
@@ -331,6 +340,24 @@ impl App {
         }
     }
 
+    /// Put the tray icon back after the shell restarted.
+    ///
+    /// Explorer forgets every icon when it dies, so this is a fresh add rather
+    /// than a modify, version and all. `uFlags` is written out in full instead
+    /// of being reused, because `notify` leaves `NIF_INFO` in there along with
+    /// the text of the last notification: re adding with that still set would
+    /// pop the old notification again every time Explorer restarted.
+    fn readd_tray_icon(&mut self) {
+        self.nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        unsafe {
+            let _ = Shell_NotifyIconW(NIM_ADD, &self.nid);
+            let _ = Shell_NotifyIconW(NIM_SETVERSION, &self.nid);
+        }
+        // The add above carries whatever tooltip and icon were last set, which
+        // may be stale by a tick. This puts the live ones back.
+        self.update_tray();
+    }
+
     fn notify(&mut self, title: &str, body: &str) {
         set_wide_field(&mut self.nid.szInfoTitle, title);
         set_wide_field(&mut self.nid.szInfo, body);
@@ -604,6 +631,18 @@ extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    // A registered message id is decided at runtime, so it cannot be a match
+    // arm alongside the constants below.
+    let taskbar_created = TASKBAR_CREATED.load(Ordering::Relaxed);
+    if taskbar_created != 0 && msg == taskbar_created {
+        APP.with(|a| {
+            if let Some(app) = a.borrow_mut().as_mut() {
+                app.readd_tray_icon();
+            }
+        });
+        return LRESULT(0);
+    }
+
     match msg {
         WM_TRAY => {
             let event = (lparam.0 as u32) & 0xFFFF;
@@ -746,8 +785,24 @@ fn main() {
         };
         RegisterClassW(&class);
 
+        TASKBAR_CREATED.store(
+            RegisterWindowMessageW(w!("TaskbarCreated")),
+            Ordering::Relaxed,
+        );
+
+        // Deliberately a normal top level window rather than a message only one
+        // parented to HWND_MESSAGE, which is what this used to be and what it
+        // otherwise wants to be. Explorer announces a shell restart by
+        // broadcasting to top level windows, and broadcasts never reach message
+        // only windows, so as a message only window the tray icon stayed gone
+        // until the app was restarted by hand.
+        //
+        // It costs nothing visible. The window is zero sized and never shown,
+        // and WS_EX_TOOLWINDOW keeps it out of the taskbar and Alt Tab even if
+        // it somehow were. The only real cost is that other broadcasts now
+        // arrive too, which DefWindowProcW drops.
         let hwnd = CreateWindowExW(
-            WINDOW_EX_STYLE(0),
+            WS_EX_TOOLWINDOW,
             w!("GloriousAPRWindow"),
             w!("Glorious Auto Polling Rate"),
             WINDOW_STYLE(0),
@@ -755,7 +810,7 @@ fn main() {
             0,
             0,
             0,
-            HWND_MESSAGE,
+            None,
             None,
             hinstance,
             None,

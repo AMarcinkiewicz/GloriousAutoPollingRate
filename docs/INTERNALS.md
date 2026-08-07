@@ -10,6 +10,8 @@ Everything here is for the curious. None of it is needed to use the tool.
 - Rates are applied by opening the mouse vendor HID collection and sending a feature report, built in for the Model D2 Pro 4K and overridable with a `protocol.toml`. See [PROTOCOL.md](PROTOCOL.md).
 - Start with Windows is a single value under the per user `Run` key. There is no second copy of that state in the settings file, so the menu can never disagree with what Windows will actually do.
 - The process trims its working set twice: once at startup, and again whenever the tray menu closes. Because a timer tick touches so little, the pages then stay reclaimed and it sits near 1.3 MB rather than growing back.
+- The window is hidden but is a real top level window, not a message only one parented to `HWND_MESSAGE`. That looks like the wrong choice for something with no UI, and it is deliberate: Explorer announces a shell restart by broadcasting `TaskbarCreated`, broadcasts do not reach message only windows, and without it the tray icon disappears for good the first time Explorer dies. `WS_EX_TOOLWINDOW` keeps the window out of the taskbar and Alt Tab.
+- A notification means one thing: a program on your list opened and the active rate went on. It is an edge on whether anything is running rather than a comparison of rate values, so a game that stays open notifies once no matter how many ticks pass. Manual actions pass `Silent::Yes` and say nothing, on the grounds that you already know what you just clicked.
 
 ## Footprint
 
@@ -19,8 +21,9 @@ Measured on the release build, sampled every minute, on a desktop with about 190
 | --- | --- |
 | Executable size | 0.50 MB |
 | Private memory | about 1.8 to 2.1 MB |
-| Working set, idle | about 1.3 MB |
-| Working set, while the tray menu is open | about 4.4 MB, released when it closes |
+| Working set, idle | about 1.3 to 2.0 MB |
+| Working set, while the tray menu is open | about 4.4 to 5.4 MB, released when it closes |
+| CPU | 31 ms over 300 s, which is **0.01 percent of one core** |
 
 The working set deserves the second row rather than a single flattering number. Opening the tray menu pulls in the Windows shell libraries, `shell32`, `comctl32`, `uxtheme` and friends, and those are most of what the process is holding while a menu is on screen. Measured across a real menu open and close:
 
@@ -32,7 +35,8 @@ The working set deserves the second row rather than a single flattering number. 
 | Six seconds later | 1428 KB |
 
 Left alone it would simply stay at the higher number for the rest of the session, so the menu handler trims on the way out. Note that most of that difference is shared library pages that other processes are already using, not memory your machine would otherwise have free, which is why private memory barely moves across the same sequence.
-| CPU | 31 ms over 300 s, which is **0.01 percent of one core** |
+
+How much the menu costs depends on how much of the shell is already paged in. The 4436 KB above is a warm machine. Opening the menu for the first time straight after Explorer has restarted, when none of those libraries are resident, was measured at 9852 KB, trimming back to 2000 KB on close. The trim is what matters and it holds in both cases.
 
 ## The process scan
 
