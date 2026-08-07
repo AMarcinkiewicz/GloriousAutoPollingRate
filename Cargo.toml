@@ -1,6 +1,6 @@
 ﻿[package]
 name = "glorious-auto-polling-rate"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 description = "A tiny Windows tray tool that automatically switches your Glorious mouse polling rate per application."
 license = "MIT"
